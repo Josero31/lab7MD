@@ -120,3 +120,258 @@ print(round(prop.table(table(test$precio_cat)) * 100, 2))
 ```
 
 La distribución de las categorías es similar en ambos conjuntos, lo que indica que la partición aleatoria mantuvo proporciones representativas.
+
+---
+
+## 3. Modelo de Regresión Logística: ¿Es caro el Airbnb?
+
+### Variables predictoras seleccionadas
+
+Se seleccionan variables que a priori tienen sentido económico para explicar si un Airbnb es caro:
+
+| Variable | Descripción |
+|---|---|
+| `accommodates` | Capacidad máxima de huéspedes |
+| `bedrooms` | Número de habitaciones |
+| `bathrooms` | Número de baños |
+| `beds` | Número de camas |
+| `room_type` | Tipo de alojamiento (casa entera, habitación privada, etc.) |
+| `host_is_superhost` | Si el anfitrión es superhost |
+| `instant_bookable` | Si permite reserva instantánea |
+| `minimum_nights` | Mínimo de noches requeridas |
+| `number_of_reviews` | Número total de reseñas |
+| `availability_365` | Días disponibles al año |
+
+```{r preparacion_modelo}
+library(caret)
+library(car)
+library(ggplot2)
+library(corrplot)
+
+# Preparar variables para el modelo
+listings_modelo <- listings %>%
+  mutate(
+    host_is_superhost  = ifelse(host_is_superhost == "t", 1, 0),
+    instant_bookable   = ifelse(instant_bookable  == "t", 1, 0),
+    room_type          = factor(room_type)
+  ) %>%
+  select(es_caro, accommodates, bedrooms, bathrooms, beds,
+         room_type, host_is_superhost, instant_bookable,
+         minimum_nights, number_of_reviews, availability_365) %>%
+  na.omit()
+
+cat("Observaciones disponibles para el modelo:", nrow(listings_modelo), "\n")
+cat("Distribución de la variable respuesta (es_caro):\n")
+print(table(listings_modelo$es_caro))
+```
+
+```{r split_modelo}
+# Reproducir exactamente el mismo split (set.seed(123), 80/20)
+set.seed(123)
+idx <- sample(seq_len(nrow(listings_modelo)), size = floor(0.80 * nrow(listings_modelo)))
+train_m <- listings_modelo[ idx, ]
+test_m  <- listings_modelo[-idx, ]
+
+cat("Train:", nrow(train_m), "| Test:", nrow(test_m), "\n")
+```
+
+### Entrenamiento con validación cruzada (10 folds)
+
+```{r modelo_logistico_cv}
+set.seed(123)
+
+ctrl <- trainControl(
+  method          = "cv",
+  number          = 10,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# caret necesita la variable respuesta como factor con nombres válidos
+train_cv <- train_m %>%
+  mutate(es_caro_f = factor(ifelse(es_caro == 1, "Caro", "NoCaro"),
+                            levels = c("NoCaro", "Caro"))) %>%
+  select(-es_caro)
+
+modelo_cv <- train(
+  es_caro_f ~ .,
+  data      = train_cv,
+  method    = "glm",
+  family    = binomial(link = "logit"),
+  trControl = ctrl,
+  metric    = "ROC"
+)
+
+cat("=== Resultados de Validación Cruzada (10 folds) ===\n")
+print(modelo_cv$results)
+```
+
+### Coeficientes e interpretación del modelo
+
+```{r coeficientes}
+modelo_glm <- modelo_cv$finalModel
+cat("=== Resumen del modelo de regresión logística ===\n")
+print(summary(modelo_glm))
+```
+
+**Interpretación de los coeficientes:**
+
+- Los coeficientes en escala logit indican el cambio en el log-odds de que el Airbnb sea caro ante un incremento unitario en la variable predictora, manteniendo las demás constantes.
+- Un coeficiente **positivo** aumenta la probabilidad de ser clasificado como caro; uno **negativo** la reduce.
+- Los odds ratios (exponencial de los coeficientes) facilitan la interpretación directa.
+
+```{r odds_ratios}
+or <- exp(coef(modelo_glm))
+ic <- exp(confint(modelo_glm))
+or_tabla <- data.frame(
+  Odds_Ratio = round(or, 4),
+  IC_2.5     = round(ic[, 1], 4),
+  IC_97.5    = round(ic[, 2], 4)
+)
+print(or_tabla)
+```
+
+**Lectura de odds ratios clave:**
+
+- `accommodates`: cada huésped adicional que puede alojar el Airbnb multiplica los odds de ser caro por su OR.
+- `room_type`: las habitaciones privadas o compartidas tienen odds menores de ser caras comparadas con un alojamiento completo (categoría de referencia).
+- `host_is_superhost`: ser superhost modifica los odds de ser caro en la dirección indicada por el signo.
+
+---
+
+## 4. Análisis del Modelo
+
+### 4.1 Multicolinealidad — Factor de Inflación de la Varianza (VIF)
+
+```{r vif}
+vif_vals <- vif(modelo_glm)
+vif_df <- data.frame(Variable = names(vif_vals), VIF = round(as.numeric(vif_vals), 3))
+vif_df <- vif_df[order(-vif_df$VIF), ]
+print(vif_df)
+
+ggplot(vif_df, aes(x = reorder(Variable, VIF), y = VIF, fill = VIF > 5)) +
+  geom_col(show.legend = FALSE) +
+  geom_hline(yintercept = 5,  linetype = "dashed", color = "orange", linewidth = 0.8) +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "red",    linewidth = 0.8) +
+  coord_flip() +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(title = "Factor de Inflación de la Varianza (VIF)",
+       subtitle = "Línea naranja = 5 (moderado) | Línea roja = 10 (severo)",
+       x = NULL, y = "VIF") +
+  theme_minimal()
+```
+
+**Criterio de decisión:**
+
+- VIF < 5 → sin problema de multicolinealidad.
+- 5 ≤ VIF < 10 → multicolinealidad moderada, evaluar si afecta inferencia.
+- VIF ≥ 10 → multicolinealidad severa, considerar eliminar o combinar variables.
+
+### 4.2 Significación estadística de las variables
+
+```{r significancia}
+coef_tabla <- as.data.frame(summary(modelo_glm)$coefficients)
+coef_tabla$Variable <- rownames(coef_tabla)
+coef_tabla <- coef_tabla %>%
+  rename(Estimado = Estimate, Error_Std = `Std. Error`,
+         z_valor = `z value`, p_valor = `Pr(>|z|)`) %>%
+  mutate(
+    Significativa = ifelse(p_valor < 0.05, "Sí", "No"),
+    p_valor = round(p_valor, 6)
+  ) %>%
+  select(Variable, Estimado, Error_Std, z_valor, p_valor, Significativa) %>%
+  arrange(p_valor)
+
+print(coef_tabla)
+```
+
+Las variables con **p-valor < 0.05** son estadísticamente significativas y aportan información al modelo para discriminar si un Airbnb es caro.
+
+### 4.3 Análisis de correlación entre variables numéricas
+
+```{r correlacion}
+vars_num <- train_m %>%
+  select(accommodates, bedrooms, bathrooms, beds,
+         host_is_superhost, instant_bookable,
+         minimum_nights, number_of_reviews, availability_365)
+
+mat_cor <- cor(vars_num, use = "complete.obs")
+round(mat_cor, 3)
+```
+
+```{r grafico_correlacion}
+corrplot(mat_cor,
+         method  = "color",
+         type    = "upper",
+         addCoef.col = "black",
+         number.cex  = 0.7,
+         tl.cex      = 0.8,
+         title   = "Matriz de correlación de variables numéricas",
+         mar     = c(0, 0, 1, 0))
+```
+
+**Interpretación de la correlación:**
+
+- Correlaciones |r| > 0.7 entre predictores indican colinealidad potencialmente problemática.
+- `accommodates`, `bedrooms`, `bathrooms` y `beds` suelen correlacionarse porque describen el tamaño del alojamiento; es esperable cierta correlación entre ellos.
+- Si el VIF y la correlación coinciden en señalar el mismo par de variables, puede convenir eliminar la menos interpretable.
+
+### 4.4 Evaluación del ajuste con umbral 0.5
+
+```{r evaluacion_umbral}
+# Predicciones sobre el conjunto de prueba
+test_cv <- test_m %>%
+  mutate(es_caro_f = factor(ifelse(es_caro == 1, "Caro", "NoCaro"),
+                            levels = c("NoCaro", "Caro"))) %>%
+  select(-es_caro)
+
+probs_test <- predict(modelo_cv, newdata = test_cv, type = "prob")[, "Caro"]
+preds_test <- ifelse(probs_test >= 0.5, "Caro", "NoCaro")
+preds_test <- factor(preds_test, levels = c("NoCaro", "Caro"))
+
+cm <- confusionMatrix(preds_test, test_cv$es_caro_f, positive = "Caro")
+print(cm)
+```
+
+```{r metricas_resumen}
+acc  <- cm$overall["Accuracy"]
+sens <- cm$byClass["Sensitivity"]
+spec <- cm$byClass["Specificity"]
+prec <- cm$byClass["Precision"]
+f1   <- cm$byClass["F1"]
+
+cat(sprintf("Exactitud  (Accuracy)  : %.4f\n", acc))
+cat(sprintf("Sensibilidad (Recall)  : %.4f\n", sens))
+cat(sprintf("Especificidad          : %.4f\n", spec))
+cat(sprintf("Precisión              : %.4f\n", prec))
+cat(sprintf("F1-Score               : %.4f\n", f1))
+```
+
+```{r curva_roc}
+library(pROC)
+roc_obj <- roc(response  = as.numeric(test_cv$es_caro_f == "Caro"),
+               predictor = probs_test,
+               quiet     = TRUE)
+
+plot(roc_obj, col = "steelblue", lwd = 2,
+     main = paste0("Curva ROC  (AUC = ", round(auc(roc_obj), 4), ")"))
+abline(a = 0, b = 1, lty = 2, col = "gray50")
+```
+
+### 4.5 Conclusión sobre el ajuste del modelo
+
+```{r conclusion_ajuste}
+# Pseudo R² de McFadden
+null_ll  <- logLik(glm(es_caro ~ 1, data = train_m, family = binomial))
+full_ll  <- logLik(modelo_glm)
+mcfadden <- 1 - (as.numeric(full_ll) / as.numeric(null_ll))
+cat(sprintf("Pseudo R² de McFadden: %.4f\n", mcfadden))
+```
+
+**Interpretación global:**
+
+- El **Pseudo R² de McFadden** entre 0.2 y 0.4 indica un buen ajuste para modelos de regresión logística.
+- El **AUC-ROC** mide la capacidad discriminativa del modelo: valores cercanos a 1 indican excelente separación entre clases.
+- La **exactitud, sensibilidad y especificidad** en el conjunto de prueba permiten evaluar si el modelo generaliza bien a datos no vistos.
+- Si la exactitud en prueba es cercana a la de entrenamiento (obtenida por validación cruzada), el modelo no presenta sobreajuste (overfitting).
