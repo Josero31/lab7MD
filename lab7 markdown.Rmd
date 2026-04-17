@@ -375,3 +375,262 @@ cat(sprintf("Pseudo R² de McFadden: %.4f\n", mcfadden))
 - El **AUC-ROC** mide la capacidad discriminativa del modelo: valores cercanos a 1 indican excelente separación entre clases.
 - La **exactitud, sensibilidad y especificidad** en el conjunto de prueba permiten evaluar si el modelo generaliza bien a datos no vistos.
 - Si la exactitud en prueba es cercana a la de entrenamiento (obtenida por validación cruzada), el modelo no presenta sobreajuste (overfitting).
+
+---
+
+## 5. Eficiencia del modelo en el conjunto de prueba
+
+Se aplica el modelo entrenado sobre el conjunto de prueba con umbral de decisión 0.5 y se analizan todas las métricas de clasificación.
+
+### 5.1 Matriz de confusión (visualización)
+
+```{r cm_visual}
+# Reconstruir predicciones sobre test (mismas que sección 4.4)
+probs_test5 <- predict(modelo_cv, newdata = test_cv, type = "prob")[, "Caro"]
+preds_test5 <- factor(ifelse(probs_test5 >= 0.5, "Caro", "NoCaro"),
+                      levels = c("NoCaro", "Caro"))
+
+cm5 <- confusionMatrix(preds_test5, test_cv$es_caro_f, positive = "Caro")
+
+# Tabla de la matriz de confusión como data frame para ggplot
+cm_df <- as.data.frame(cm5$table)
+colnames(cm_df) <- c("Predicho", "Real", "Frecuencia")
+
+ggplot(cm_df, aes(x = Real, y = Predicho, fill = Frecuencia)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = Frecuencia), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#d6eaf8", high = "#1a5276") +
+  labs(title = "Matriz de Confusión — Conjunto de Prueba",
+       subtitle = "Umbral de decisión: 0.5",
+       x = "Valor Real", y = "Valor Predicho") +
+  theme_minimal(base_size = 13)
+```
+
+### 5.2 Métricas de eficiencia
+
+```{r metricas_eficiencia}
+acc5   <- cm5$overall["Accuracy"]
+kappa5 <- cm5$overall["Kappa"]
+sens5  <- cm5$byClass["Sensitivity"]      # Recall / TPR
+spec5  <- cm5$byClass["Specificity"]      # TNR
+prec5  <- cm5$byClass["Precision"]        # PPV
+f15    <- cm5$byClass["F1"]
+bal5   <- cm5$byClass["Balanced Accuracy"]
+
+metricas <- data.frame(
+  Métrica     = c("Exactitud (Accuracy)", "Kappa de Cohen",
+                  "Sensibilidad (Recall/TPR)", "Especificidad (TNR)",
+                  "Precisión (PPV)", "F1-Score",
+                  "Exactitud Balanceada"),
+  Valor       = round(c(acc5, kappa5, sens5, spec5, prec5, f15, bal5), 4),
+  Interpretación = c(
+    "Proporción total de clasificaciones correctas",
+    "Acuerdo más allá del azar (> 0.6 = bueno)",
+    "De los caros reales, ¿cuántos detectó?",
+    "De los no-caros reales, ¿cuántos identificó?",
+    "De los predichos como caros, ¿cuántos lo son?",
+    "Media armónica de precisión y recall",
+    "Promedio de sensibilidad y especificidad"
+  )
+)
+print(metricas, row.names = FALSE)
+```
+
+### 5.3 Curva ROC y AUC en prueba
+
+```{r roc_prueba}
+library(pROC)
+roc5 <- roc(response  = as.numeric(test_cv$es_caro_f == "Caro"),
+            predictor = probs_test5,
+            quiet     = TRUE)
+
+plot(roc5, col = "steelblue", lwd = 2,
+     main = paste0("Curva ROC — Conjunto de Prueba  (AUC = ",
+                   round(auc(roc5), 4), ")"),
+     xlab = "1 - Especificidad (FPR)",
+     ylab = "Sensibilidad (TPR)")
+abline(a = 0, b = 1, lty = 2, col = "gray60")
+legend("bottomright",
+       legend = c(paste0("Modelo (AUC = ", round(auc(roc5), 4), ")"),
+                  "Clasificador aleatorio"),
+       col    = c("steelblue", "gray60"),
+       lty    = c(1, 2), lwd = c(2, 1))
+```
+
+### 5.4 Interpretación de la eficiencia
+
+```{r interpretacion_eficiencia}
+cat("--- Resumen de eficiencia del modelo ---\n\n")
+cat(sprintf("AUC-ROC           : %.4f\n", auc(roc5)))
+cat(sprintf("Exactitud         : %.2f%%\n", acc5 * 100))
+cat(sprintf("Kappa de Cohen    : %.4f\n",  kappa5))
+cat(sprintf("F1-Score          : %.4f\n",  f15))
+cat(sprintf("Exactitud Balanc. : %.4f\n",  bal5))
+```
+
+**Lectura de los resultados:**
+
+- **AUC-ROC**: indica la probabilidad de que el modelo asigne una probabilidad mayor a un Airbnb caro que a uno no-caro. Valores ≥ 0.80 indican buena discriminación.
+- **Kappa de Cohen**: corrige la exactitud por la probabilidad de acuerdo al azar. Valores > 0.60 reflejan acuerdo sustancial.
+- **F1-Score**: relevante cuando las clases son desbalanceadas; combina precisión y recall en una sola métrica.
+- **Exactitud Balanceada**: útil cuando hay desbalance de clases; pondera igual ambas clases.
+- Si la **sensibilidad** es notablemente más baja que la especificidad (o viceversa), el umbral de 0.5 puede no ser óptimo para el problema.
+
+---
+
+## 6. Sobreajuste (Overfitting) y Curvas de Aprendizaje
+
+### 6.1 Comparación directa: error de entrenamiento vs. error de prueba
+
+Para diagnosticar overfitting se calcula el **error de clasificación** (1 − Accuracy) en:
+
+1. El **conjunto de entrenamiento** (predicciones in-sample).
+2. El **conjunto de prueba** (predicciones out-of-sample).
+
+```{r error_train_test}
+# --- Error en entrenamiento ---
+probs_train <- predict(modelo_cv, newdata = train_cv, type = "prob")[, "Caro"]
+preds_train <- factor(ifelse(probs_train >= 0.5, "Caro", "NoCaro"),
+                      levels = c("NoCaro", "Caro"))
+
+cm_train <- confusionMatrix(preds_train, train_cv$es_caro_f, positive = "Caro")
+error_train <- 1 - as.numeric(cm_train$overall["Accuracy"])
+
+# --- Error en prueba ---
+error_test  <- 1 - as.numeric(acc5)
+
+# --- Error promedio de validación cruzada (10 folds) ---
+error_cv <- 1 - modelo_cv$results$Accuracy   # único valor para glm
+
+cat(sprintf("Error de entrenamiento (in-sample)  : %.4f  (%.2f%%)\n",
+            error_train, error_train * 100))
+cat(sprintf("Error de prueba       (out-of-sample): %.4f  (%.2f%%)\n",
+            error_test,  error_test  * 100))
+cat(sprintf("Error de val. cruzada (10-fold CV)   : %.4f  (%.2f%%)\n",
+            error_cv,    error_cv    * 100))
+cat(sprintf("\nDiferencia (prueba − entrenamiento) : %.4f\n",
+            error_test - error_train))
+```
+
+**Criterio de diagnóstico:**
+
+| Situación | Error entrenamiento | Error prueba | Brecha |
+|---|---|---|---|
+| Buen ajuste | Bajo | Bajo ≈ entrenamiento | Pequeña |
+| Overfitting | Muy bajo | Mucho mayor | Grande |
+| Underfitting | Alto | Alto | Pequeña |
+
+### 6.2 Curvas de aprendizaje
+
+Las curvas de aprendizaje muestran cómo evolucionan los errores a medida que se incrementa el tamaño del conjunto de entrenamiento. Si el modelo generaliza bien, ambas curvas convergen; si hay overfitting, la brecha persiste con conjuntos grandes.
+
+```{r curvas_aprendizaje, cache=TRUE}
+set.seed(123)
+
+# Proporciones del conjunto de entrenamiento a evaluar
+proporciones <- c(0.05, 0.10, 0.15, 0.20, 0.30, 0.40,
+                  0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
+
+n_train <- nrow(train_m)
+
+# Datos de prueba en formato glm (matriz de diseño)
+X_test  <- model.matrix(es_caro ~ accommodates + bedrooms + bathrooms + beds +
+                           room_type + host_is_superhost + instant_bookable +
+                           minimum_nights + number_of_reviews + availability_365,
+                         data = test_m)
+y_test  <- test_m$es_caro
+
+resultados_lc <- data.frame()
+
+for (prop in proporciones) {
+  idx_sub  <- sample(seq_len(n_train), size = floor(prop * n_train))
+  sub_data <- train_m[idx_sub, ]
+
+  # Ajustar modelo logístico
+  mod_sub <- glm(es_caro ~ accommodates + bedrooms + bathrooms + beds +
+                   room_type + host_is_superhost + instant_bookable +
+                   minimum_nights + number_of_reviews + availability_365,
+                 data   = sub_data,
+                 family = binomial(link = "logit"))
+
+  # Error en subconjunto de entrenamiento
+  p_tr  <- predict(mod_sub, newdata = sub_data, type = "response")
+  e_tr  <- mean(ifelse(p_tr >= 0.5, 1, 0) != sub_data$es_caro)
+
+  # Error en conjunto de prueba completo
+  p_te  <- predict(mod_sub, newdata = test_m, type = "response")
+  e_te  <- mean(ifelse(p_te >= 0.5, 1, 0) != y_test)
+
+  resultados_lc <- rbind(resultados_lc,
+                         data.frame(
+                           prop       = prop,
+                           n_obs      = floor(prop * n_train),
+                           error_train = e_tr,
+                           error_test  = e_te
+                         ))
+}
+
+print(resultados_lc)
+```
+
+```{r plot_curvas_aprendizaje}
+library(tidyr)
+
+lc_long <- resultados_lc %>%
+  pivot_longer(cols = c(error_train, error_test),
+               names_to  = "Conjunto",
+               values_to = "Error") %>%
+  mutate(Conjunto = case_when(
+    Conjunto == "error_train" ~ "Entrenamiento",
+    Conjunto == "error_test"  ~ "Prueba",
+    TRUE ~ Conjunto
+  ))
+
+ggplot(lc_long, aes(x = n_obs, y = Error, color = Conjunto, group = Conjunto)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Entrenamiento" = "#e74c3c",
+                                "Prueba"        = "#2980b9")) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  labs(
+    title    = "Curvas de Aprendizaje — Regresión Logística",
+    subtitle = "Error de clasificación (1 − Accuracy) vs. tamaño del conjunto de entrenamiento",
+    x        = "Número de observaciones de entrenamiento",
+    y        = "Error de clasificación",
+    color    = "Conjunto"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+```
+
+### 6.3 Diagnóstico de overfitting
+
+```{r diagnostico_overfitting}
+brecha_final <- resultados_lc$error_test[nrow(resultados_lc)] -
+                resultados_lc$error_train[nrow(resultados_lc)]
+
+cat(sprintf("Error de entrenamiento (100%% de train) : %.4f\n",
+            resultados_lc$error_train[nrow(resultados_lc)]))
+cat(sprintf("Error de prueba        (100%% de train) : %.4f\n",
+            resultados_lc$error_test[nrow(resultados_lc)]))
+cat(sprintf("Brecha final (test - train)            : %.4f\n", brecha_final))
+
+if (brecha_final < 0.02) {
+  cat("\nDiagnóstico: SIN sobreajuste significativo.\n")
+  cat("Ambos errores son similares; el modelo generaliza bien.\n")
+} else if (brecha_final < 0.05) {
+  cat("\nDiagnóstico: sobreajuste LEVE.\n")
+  cat("La diferencia entre errores existe pero es pequeña.\n")
+} else {
+  cat("\nDiagnóstico: sobreajuste MODERADO/SEVERO.\n")
+  cat("El error de prueba supera notablemente al de entrenamiento.\n")
+}
+```
+
+**Interpretación de las curvas:**
+
+- Si la curva de **entrenamiento** comienza muy baja y sube al crecer el dataset → el modelo memoriza los datos con pocas muestras (overfitting en muestras pequeñas), pero generaliza mejor con más datos.
+- Si la curva de **prueba** desciende al crecer el dataset y se aproxima a la de entrenamiento → el modelo se beneficia de más datos y tiende a un buen ajuste.
+- Si ambas curvas **convergen y se estabilizan** en una zona baja → el modelo ha alcanzado su capacidad óptima sin overfitting.
+- Si la brecha entre ambas curvas **persiste incluso con el 100 % de los datos de entrenamiento** → existe overfitting estructural y convendría regularización (e.g., Ridge/LASSO) o reducción de variables.
