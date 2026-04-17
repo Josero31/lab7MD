@@ -1,0 +1,122 @@
+---
+title: "Lab 7 markdown"
+author: "Jose Sanchez, Andre Pivaral y Roberto Najerra "
+date: "2026-04-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Carga de datos y preprocesamiento
+
+```{r carga}
+library(dplyr)
+
+load("listings.RData")
+
+# Limpiar precio: quitar símbolo $ y comas, convertir a numérico
+listings <- listings %>%
+  mutate(price_num = as.numeric(gsub("[$,]", "", price))) %>%
+  filter(!is.na(price_num), price_num > 0)
+
+cat("Observaciones después de limpieza:", nrow(listings), "\n")
+```
+
+## Variable respuesta categórica: precio_cat
+
+Se definen tres categorías usando los percentiles 33 y 67:
+
+- **Económico**: precio ≤ percentil 33 (≤ $141)
+- **Medio**: percentil 33 < precio ≤ percentil 67 ($141 – $270)
+- **Caro**: precio > percentil 67 (> $270)
+
+```{r variable_categorica}
+# Calcular umbrales con terciles
+q33 <- quantile(listings$price_num, 0.33)
+q67 <- quantile(listings$price_num, 0.67)
+
+cat("Umbral económico / medio:", q33, "\n")
+cat("Umbral medio / caro:     ", q67, "\n")
+
+# Crear variable categórica
+listings <- listings %>%
+  mutate(precio_cat = case_when(
+    price_num <= q33 ~ "economico",
+    price_num <= q67 ~ "medio",
+    TRUE             ~ "caro"
+  ))
+
+listings$precio_cat <- factor(listings$precio_cat,
+                              levels = c("economico", "medio", "caro"))
+
+table(listings$precio_cat)
+```
+
+## 1. Variables dicotómicas por categoría
+
+Se crea una variable indicadora (0/1) por cada categoría de `precio_cat`:
+
+- `es_caro`     : 1 si el Airbnb es caro, 0 si no
+- `es_medio`    : 1 si el Airbnb es de precio medio, 0 si no
+- `es_economico`: 1 si el Airbnb es económico, 0 si no
+
+```{r variables_dicotomicas}
+listings <- listings %>%
+  mutate(
+    es_caro      = ifelse(precio_cat == "caro",      1, 0),
+    es_medio     = ifelse(precio_cat == "medio",     1, 0),
+    es_economico = ifelse(precio_cat == "economico", 1, 0)
+  )
+
+# Verificación: tabla de frecuencias de cada variable dicotómica
+cat("--- es_caro ---\n")
+print(table(listings$es_caro))
+
+cat("\n--- es_medio ---\n")
+print(table(listings$es_medio))
+
+cat("\n--- es_economico ---\n")
+print(table(listings$es_economico))
+```
+
+```{r verificacion_dicotomicas}
+# Confirmar que las tres variables suman 1 para cada observación
+listings %>%
+  mutate(suma = es_caro + es_medio + es_economico) %>%
+  summarise(
+    min_suma = min(suma),
+    max_suma = max(suma)
+  )
+```
+
+La suma de las tres variables es siempre 1, lo que confirma que son mutuamente excluyentes y exhaustivas.
+
+## 2. Conjuntos de entrenamiento y prueba
+
+Se utilizan los mismos conjuntos de entrenamiento (80 %) y prueba (20 %) de las hojas anteriores, con `set.seed(123)`.
+
+```{r train_test_split}
+set.seed(123)
+
+n <- nrow(listings)
+indices_train <- sample(seq_len(n), size = floor(0.80 * n))
+
+train <- listings[ indices_train, ]
+test  <- listings[-indices_train, ]
+
+cat("Tamaño conjunto de entrenamiento:", nrow(train), "\n")
+cat("Tamaño conjunto de prueba:       ", nrow(test),  "\n")
+```
+
+```{r distribucion_split}
+# Distribución de precio_cat en entrenamiento y prueba
+cat("Distribución en entrenamiento:\n")
+print(round(prop.table(table(train$precio_cat)) * 100, 2))
+
+cat("\nDistribución en prueba:\n")
+print(round(prop.table(table(test$precio_cat)) * 100, 2))
+```
+
+La distribución de las categorías es similar en ambos conjuntos, lo que indica que la partición aleatoria mantuvo proporciones representativas.
