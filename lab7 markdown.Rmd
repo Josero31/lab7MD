@@ -790,6 +790,7 @@ Aunque este ajuste reduce la especificidad y aumenta el número de falsos positi
 Desde una perspectiva de negocio, este cambio es justificable, ya que es más importante minimizar los falsos negativos (no detectar propiedades caras) que los falsos positivos, debido al impacto directo en los ingresos de la empresa.
 
 Por lo tanto, el umbral basado en el índice de Youden ofrece un mejor equilibrio entre sensibilidad y especificidad, y resulta más adecuado para este problema.
+
 # 10. Selección del mejor modelo de regresión logística
 
 Tras haber construido distintas variantes del modelo (base con umbral 0.5, base con umbral ajustado por Youden y el modelo LASSO regularizado), se comparan bajo los mismos criterios para determinar cuál es el mejor clasificador binario para `es_caro`. Se emplean como criterios: **AIC y BIC** (balance entre ajuste y complejidad), **matriz de confusión** (accuracy, sensibilidad, especificidad, F1, exactitud balanceada) y **tiempo de entrenamiento** como proxy del costo computacional medido en la sección de profiling.
