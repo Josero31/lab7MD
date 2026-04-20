@@ -634,3 +634,53 @@ if (brecha_final < 0.02) {
 - Si la curva de **prueba** desciende al crecer el dataset y se aproxima a la de entrenamiento → el modelo se beneficia de más datos y tiende a un buen ajuste.
 - Si ambas curvas **convergen y se estabilizan** en una zona baja → el modelo ha alcanzado su capacidad óptima sin overfitting.
 - Si la brecha entre ambas curvas **persiste incluso con el 100 % de los datos de entrenamiento** → existe overfitting estructural y convendría regularización (e.g., Ridge/LASSO) o reducción de variables.
+
+# 7. Tuneo del modelo (Regularización)
+
+```{r}
+library(glmnet)
+
+# Preparar matrices para glmnet (requiere matrices, no dataframes)
+x_train <- model.matrix(es_caro ~ ., train_m)[, -1]
+y_train <- train_m$es_caro
+
+x_test  <- model.matrix(es_caro ~ ., test_m)[, -1]
+y_test  <- test_m$es_caro
+
+set.seed(123)
+
+# Validación cruzada para encontrar mejor lambda
+cv_lasso <- cv.glmnet(
+  x_train, y_train,
+  family = "binomial",
+  alpha  = 1,        # LASSO (1 = LASSO, 0 = Ridge)
+  nfolds = 10
+)
+
+# Mejor lambda
+best_lambda <- cv_lasso$lambda.min
+cat("Mejor lambda:", best_lambda, "\n")
+
+# Modelo final con mejor lambda
+modelo_lasso <- glmnet(
+  x_train, y_train,
+  family = "binomial",
+  alpha  = 1,
+  lambda = best_lambda
+)
+
+probs_lasso <- predict(modelo_lasso, newx = x_test, type = "response")
+preds_lasso <- ifelse(probs_lasso >= 0.5, 1, 0)
+
+cm_lasso <- confusionMatrix(
+  factor(preds_lasso),
+  factor(y_test),
+  positive = "1"
+)
+
+print(cm_lasso)
+```
+## Interpretacion
+
+La regularización penaliza coeficientes grandes, reduciendo overfitting.
+LASSO puede incluso eliminar variables (coeficientes = 0).
