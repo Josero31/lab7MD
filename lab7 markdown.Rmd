@@ -684,3 +684,59 @@ print(cm_lasso)
 
 La regularización penaliza coeficientes grandes, reduciendo overfitting.
 LASSO puede incluso eliminar variables (coeficientes = 0).
+
+# 8. Análisis de eficiencia + profiling
+
+```{r}
+cm_base <- cm5$table
+print(cm_base)
+
+# Errores
+FP <- cm_base["Caro", "NoCaro"]   # Falsos positivos
+FN <- cm_base["NoCaro", "Caro"]   # Falsos negativos
+
+cat("Falsos positivos:", FP, "\n")
+cat("Falsos negativos:", FN, "\n")
+```
+
+## Interpretacion
+
+Interpretación
+
+Falsos positivos (FP): predice caro cuando no lo es
+→ impacto: cliente paga de más
+
+Falsos negativos (FN): no detecta uno caro
+→ impacto: pérdida de ingresos para SmartStay
+
+El resultado produjo mas falsos negativos, lo cual puede ser menos conveniente desde el punto de vista de SmartStay, ya que su prioridad probablemnte es su ingreso por encima de cobrarle caro al cliente.
+
+## Profiling
+
+```{r}
+library(profvis)
+
+profvis({
+  modelo_tmp <- glm(
+    es_caro ~ accommodates + bedrooms + bathrooms + beds +
+      room_type + host_is_superhost + instant_bookable +
+      minimum_nights + number_of_reviews + availability_365,
+    data = train_m,
+    family = binomial
+  )
+})
+```
+## Interpretacion 
+
+glm suele ser:
+
+rápido
+
+bajo consumo de memoria
+
+
+Comparado con:
+
+Random Forest → más pesado
+
+KNN → más lento en predicción
