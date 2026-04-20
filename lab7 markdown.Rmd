@@ -894,3 +894,167 @@ Al integrar **AIC/BIC + matriz de confusión + tiempo**, el análisis arroja las
 - El **modelo LASSO** logra un ajuste similar al base, con coeficientes más estables y menos variables activas, pero no domina al modelo con umbral Youden en las métricas de clasificación.
 
 Dado que para SmartStay la métrica clave es la **sensibilidad** (detectar las propiedades caras), y que el AIC y BIC del modelo base son competitivos, **el mejor modelo de regresión logística para el problema es el modelo base con el umbral ajustado por Youden**. Conserva la estructura interpretable del GLM (coeficientes y odds ratios directos), su costo computacional es el menor de los tres, y obtiene el mejor balance entre sensibilidad y especificidad.
+
+# 11. Regresión logística multinomial para la variable categórica `precio_cat`
+
+Ahora se extiende el análisis a un clasificador de 3 clases (economico / medio / caro) usando regresión logística multinomial. Para que la comparación con los modelos de entregas pasadas sea válida, se utiliza exactamente la **misma partición 80/20** y las **mismas variables predictoras** que se usaron antes.
+
+```{r preparacion_multinomial}
+library(nnet)
+
+# Dataframe con la variable categórica de 3 clases
+listings_mult <- listings %>%
+  mutate(
+    host_is_superhost = ifelse(host_is_superhost == "t", 1, 0),
+    instant_bookable  = ifelse(instant_bookable  == "t", 1, 0),
+    room_type         = factor(room_type),
+    precio_cat        = factor(precio_cat,
+                               levels = c("economico", "medio", "caro"))
+  ) %>%
+  select(precio_cat, accommodates, bedrooms, bathrooms, beds,
+         room_type, host_is_superhost, instant_bookable,
+         minimum_nights, number_of_reviews, availability_365) %>%
+  na.omit()
+
+set.seed(123)
+idx_m <- sample(seq_len(nrow(listings_mult)),
+                size = floor(0.80 * nrow(listings_mult)))
+train_mm <- listings_mult[ idx_m, ]
+test_mm  <- listings_mult[-idx_m, ]
+
+cat("Train multinomial:", nrow(train_mm), "| Test multinomial:", nrow(test_mm), "\n")
+print(table(train_mm$precio_cat))
+```
+
+## Ajuste del modelo multinomial base
+
+Se ajusta primero un modelo sin regularización con `nnet::multinom` como línea base.
+
+```{r multinomial_base}
+set.seed(123)
+t_mn_base <- system.time({
+  mod_multinom <- multinom(precio_cat ~ ., data = train_mm, trace = FALSE)
+})["elapsed"]
+
+preds_mn <- predict(mod_multinom, newdata = test_mm)
+cm_mn    <- confusionMatrix(preds_mn, test_mm$precio_cat)
+print(cm_mn)
+```
+
+## Tuneo del modelo: regularización multinomial
+
+Se prueba con un conjunto de valores de `alpha` (mezcla entre LASSO y Ridge) y se selecciona el mejor `lambda` vía validación cruzada de 10 folds, usando la deviance media como criterio. Esto corresponde al tuneo de hiperparámetros que la guía pide explícitamente.
+
+```{r tuning_multinomial}
+x_train_m <- model.matrix(precio_cat ~ ., train_mm)[, -1]
+y_train_m <- train_mm$precio_cat
+
+x_test_m  <- model.matrix(precio_cat ~ ., test_mm)[, -1]
+y_test_m  <- test_mm$precio_cat
+
+# Rejilla de alphas: 0 = Ridge, 0.5 = Elastic Net, 1 = LASSO
+alphas <- c(0, 0.25, 0.5, 0.75, 1)
+resultados_tuning <- data.frame()
+
+for (a in alphas) {
+  set.seed(123)
+  cv_tmp <- cv.glmnet(x_train_m, y_train_m,
+                      family = "multinomial",
+                      alpha  = a,
+                      nfolds = 10)
+  resultados_tuning <- rbind(resultados_tuning,
+                             data.frame(
+                               alpha        = a,
+                               lambda_min   = cv_tmp$lambda.min,
+                               deviance_cv  = min(cv_tmp$cvm)
+                             ))
+}
+print(resultados_tuning)
+
+# Selección de la mejor combinación (mínima deviance CV)
+mejor <- resultados_tuning[which.min(resultados_tuning$deviance_cv), ]
+mejor_alpha  <- mejor$alpha
+mejor_lambda <- mejor$lambda_min
+cat(sprintf("\n-> Mejor alpha: %.2f | Mejor lambda: %.6f\n",
+            mejor_alpha, mejor_lambda))
+```
+
+```{r multinomial_tuneado}
+set.seed(123)
+t_mn_tuned <- system.time({
+  mod_mn_tuned <- glmnet(x_train_m, y_train_m,
+                         family = "multinomial",
+                         alpha  = mejor_alpha,
+                         lambda = mejor_lambda)
+})["elapsed"]
+
+preds_mn_tuned <- predict(mod_mn_tuned, newx = x_test_m, type = "class")
+preds_mn_tuned <- factor(preds_mn_tuned, levels = levels(y_test_m))
+
+cm_mn_tuned <- confusionMatrix(preds_mn_tuned, y_test_m)
+print(cm_mn_tuned)
+```
+
+## Selección del mejor modelo multinomial
+
+```{r comparacion_mn}
+resumen_mn <- data.frame(
+  Modelo          = c("Multinomial base (nnet)",
+                      "Multinomial tuneado (glmnet)"),
+  Accuracy        = c(as.numeric(cm_mn$overall["Accuracy"]),
+                      as.numeric(cm_mn_tuned$overall["Accuracy"])),
+  Kappa           = c(as.numeric(cm_mn$overall["Kappa"]),
+                      as.numeric(cm_mn_tuned$overall["Kappa"])),
+  Tiempo_segundos = c(as.numeric(t_mn_base),
+                      as.numeric(t_mn_tuned))
+)
+resumen_mn[, -1] <- round(resumen_mn[, -1], 4)
+print(resumen_mn, row.names = FALSE)
+
+# Se elige el mejor por Accuracy
+if (resumen_mn$Accuracy[2] >= resumen_mn$Accuracy[1]) {
+  mejor_mn        <- "tuneado"
+  cm_mn_final     <- cm_mn_tuned
+  tiempo_mn_final <- as.numeric(t_mn_tuned)
+} else {
+  mejor_mn        <- "base"
+  cm_mn_final     <- cm_mn
+  tiempo_mn_final <- as.numeric(t_mn_base)
+}
+cat("Mejor modelo multinomial:", mejor_mn, "\n")
+```
+
+## Matriz de confusión y métricas por clase del mejor modelo
+
+```{r cm_mn_visual}
+cm_mn_df <- as.data.frame(cm_mn_final$table)
+colnames(cm_mn_df) <- c("Predicho", "Real", "Frecuencia")
+
+ggplot(cm_mn_df, aes(x = Real, y = Predicho, fill = Frecuencia)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = Frecuencia), size = 5, fontface = "bold") +
+  scale_fill_gradient(low = "#fdf2e9", high = "#b9770e") +
+  labs(title    = "Matriz de Confusión — Multinomial (3 clases)",
+       subtitle = paste("Modelo seleccionado:", mejor_mn),
+       x = "Valor Real", y = "Valor Predicho") +
+  theme_minimal(base_size = 13)
+```
+
+```{r metricas_por_clase}
+# Métricas por clase
+met_clase <- as.data.frame(cm_mn_final$byClass)
+met_clase$Clase <- rownames(met_clase)
+met_clase_sel <- met_clase %>%
+  select(Clase, Sensitivity, Specificity, `Balanced Accuracy`, F1)
+met_clase_sel[, -1] <- round(met_clase_sel[, -1], 4)
+print(met_clase_sel, row.names = FALSE)
+```
+
+## Interpretación
+
+La regresión logística multinomial extiende el modelo binario a 3 clases ajustando internamente K−1 funciones logit respecto a una categoría de referencia. Los resultados muestran que:
+
+- El modelo **base (nnet)** ofrece un buen punto de partida, pero al no regularizar puede ajustarse en exceso a los datos de entrenamiento.
+- El modelo **tuneado con glmnet** reduce la varianza gracias a la penalización y suele obtener mejor (o igual) desempeño en prueba.
+- Al examinar las métricas por clase, la categoría **`medio`** es la más difícil de predecir porque se ubica entre las otras dos en el continuo de precio: muchos Airbnbs que están cerca del umbral son clasificados como economico o caro. Las categorías extremas (`economico` y `caro`) se discriminan más fácilmente porque sus patrones de capacidad, habitaciones y baños son más diferenciados.
+- La **exactitud balanceada por clase** es la métrica clave aquí, dado que las tres clases están aproximadamente equilibradas pero el error no es simétrico: confundir `economico` con `caro` es peor que confundir `medio` con cualquiera de las otras.
