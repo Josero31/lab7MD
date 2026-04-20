@@ -1058,3 +1058,158 @@ La regresión logística multinomial extiende el modelo binario a 3 clases ajust
 - El modelo **tuneado con glmnet** reduce la varianza gracias a la penalización y suele obtener mejor (o igual) desempeño en prueba.
 - Al examinar las métricas por clase, la categoría **`medio`** es la más difícil de predecir porque se ubica entre las otras dos en el continuo de precio: muchos Airbnbs que están cerca del umbral son clasificados como economico o caro. Las categorías extremas (`economico` y `caro`) se discriminan más fácilmente porque sus patrones de capacidad, habitaciones y baños son más diferenciados.
 - La **exactitud balanceada por clase** es la métrica clave aquí, dado que las tres clases están aproximadamente equilibradas pero el error no es simétrico: confundir `economico` con `caro` es peor que confundir `medio` con cualquiera de las otras.
+
+# 12. Comparación con los modelos de clasificación de entregas anteriores
+
+Para comparar de forma válida, los modelos de KNN, Árbol de Decisión, Random Forest y Naive Bayes se **re-entrenan aquí sobre el mismo `train_mm` y se evalúan sobre el mismo `test_mm`** que se utilizó en el inciso anterior para el modelo multinomial. Esto garantiza que todos los algoritmos clasifiquen exactamente el mismo conjunto de datos con la misma variable respuesta.
+
+```{r librerias_comparacion}
+library(rpart)
+library(randomForest)
+library(e1071)     # Naive Bayes
+library(class)     # KNN
+```
+
+## Árbol de Decisión
+
+```{r arbol_comparacion}
+set.seed(123)
+t_tree <- system.time({
+  mod_tree <- rpart(precio_cat ~ ., data = train_mm, method = "class")
+})["elapsed"]
+
+preds_tree <- predict(mod_tree, newdata = test_mm, type = "class")
+cm_tree    <- confusionMatrix(preds_tree, test_mm$precio_cat)
+cat(sprintf("Árbol — Accuracy: %.4f | Tiempo: %.3fs\n",
+            as.numeric(cm_tree$overall["Accuracy"]),
+            as.numeric(t_tree)))
+```
+
+## Random Forest
+
+```{r rf_comparacion}
+set.seed(123)
+t_rf <- system.time({
+  mod_rf <- randomForest(precio_cat ~ ., data = train_mm, ntree = 300)
+})["elapsed"]
+
+preds_rf <- predict(mod_rf, newdata = test_mm)
+cm_rf    <- confusionMatrix(preds_rf, test_mm$precio_cat)
+cat(sprintf("Random Forest — Accuracy: %.4f | Tiempo: %.3fs\n",
+            as.numeric(cm_rf$overall["Accuracy"]),
+            as.numeric(t_rf)))
+```
+
+## Naive Bayes
+
+```{r nb_comparacion}
+set.seed(123)
+t_nb <- system.time({
+  mod_nb <- naiveBayes(precio_cat ~ ., data = train_mm)
+})["elapsed"]
+
+preds_nb <- predict(mod_nb, newdata = test_mm)
+cm_nb    <- confusionMatrix(preds_nb, test_mm$precio_cat)
+cat(sprintf("Naive Bayes — Accuracy: %.4f | Tiempo: %.3fs\n",
+            as.numeric(cm_nb$overall["Accuracy"]),
+            as.numeric(t_nb)))
+```
+
+## KNN (k = 5)
+
+KNN solo admite predictores numéricos, por lo que se reutilizan las matrices con variables dummy ya preparadas.
+
+```{r knn_comparacion}
+set.seed(123)
+t_knn <- system.time({
+  preds_knn <- knn(train = x_train_m, test = x_test_m,
+                   cl    = y_train_m, k    = 5)
+})["elapsed"]
+
+cm_knn <- confusionMatrix(preds_knn, y_test_m)
+cat(sprintf("KNN (k=5) — Accuracy: %.4f | Tiempo: %.3fs\n",
+            as.numeric(cm_knn$overall["Accuracy"]),
+            as.numeric(t_knn)))
+```
+
+## Tabla comparativa final de los 5 algoritmos
+
+```{r tabla_final_comparacion}
+comparacion_final <- data.frame(
+  Modelo           = c("Regresión Logística Multinomial",
+                       "Árbol de Decisión",
+                       "Random Forest",
+                       "Naive Bayes",
+                       "KNN (k=5)"),
+  Accuracy         = c(as.numeric(cm_mn_final$overall["Accuracy"]),
+                       as.numeric(cm_tree$overall["Accuracy"]),
+                       as.numeric(cm_rf$overall["Accuracy"]),
+                       as.numeric(cm_nb$overall["Accuracy"]),
+                       as.numeric(cm_knn$overall["Accuracy"])),
+  Kappa            = c(as.numeric(cm_mn_final$overall["Kappa"]),
+                       as.numeric(cm_tree$overall["Kappa"]),
+                       as.numeric(cm_rf$overall["Kappa"]),
+                       as.numeric(cm_nb$overall["Kappa"]),
+                       as.numeric(cm_knn$overall["Kappa"])),
+  Tiempo_segundos  = c(tiempo_mn_final,
+                       as.numeric(t_tree),
+                       as.numeric(t_rf),
+                       as.numeric(t_nb),
+                       as.numeric(t_knn))
+)
+comparacion_final[, -1] <- round(comparacion_final[, -1], 4)
+comparacion_final <- comparacion_final[order(-comparacion_final$Accuracy), ]
+print(comparacion_final, row.names = FALSE)
+```
+
+## Visualización comparativa
+
+```{r grafico_accuracy}
+ggplot(comparacion_final,
+       aes(x = reorder(Modelo, Accuracy), y = Accuracy, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.3f", Accuracy)),
+            hjust = -0.15, size = 4) +
+  coord_flip() +
+  ylim(0, max(comparacion_final$Accuracy) + 0.08) +
+  labs(title    = "Accuracy por modelo — Clasificación de 3 clases",
+       subtitle = "Variable respuesta: precio_cat (economico / medio / caro)",
+       x = NULL, y = "Accuracy en prueba") +
+  theme_minimal(base_size = 13)
+```
+
+```{r grafico_tiempos}
+ggplot(comparacion_final,
+       aes(x = reorder(Modelo, Tiempo_segundos),
+           y = Tiempo_segundos, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.3fs", Tiempo_segundos)),
+            hjust = -0.15, size = 4) +
+  coord_flip() +
+  labs(title    = "Tiempo de entrenamiento por modelo",
+       subtitle = "Menor es mejor (segundos)",
+       x = NULL, y = "Tiempo (segundos)") +
+  theme_minimal(base_size = 13)
+```
+
+## Discusión de los resultados
+
+La comparación bajo el mismo conjunto de entrenamiento y prueba responde las preguntas planteadas:
+
+**¿Cuál se demoró más en procesar?** Habitualmente **Random Forest** es el más costoso, pues entrena 300 árboles y en cada nodo considera subconjuntos aleatorios de variables. KNN no tiene fase de entrenamiento pero paga el costo en predicción al calcular distancias contra todo el conjunto de entrenamiento para cada punto de prueba. Los modelos de regresión logística y Naive Bayes entrenan en fracciones de segundo.
+
+**¿Cuál se equivocó más?** Típicamente **Naive Bayes** obtiene la menor exactitud en este problema, porque asume independencia condicional entre los predictores, supuesto que se viola claramente: `accommodates`, `bedrooms`, `bathrooms` y `beds` están fuertemente correlacionadas (es parte de por qué el VIF lo detectó antes). KNN también puede desempeñarse peor si las variables no están estandarizadas, porque la escala de `availability_365` o `number_of_reviews` domina las distancias.
+
+**¿Cuál se equivocó menos?** En general el mejor rendimiento lo obtiene **Random Forest**, seguido del **modelo multinomial tuneado**. Random Forest gana porque combina decisiones de muchos árboles diversificados y tolera bien la correlación entre predictores, las interacciones no lineales y el ruido. La regresión logística multinomial logra un desempeño cercano y aporta interpretabilidad (coeficientes y odds ratios directos por clase).
+
+**¿Por qué?** La diferencia se explica por el tipo de frontera de decisión que cada modelo puede representar:
+
+- La **regresión logística** asume fronteras aproximadamente lineales en el log-odds; funciona bien cuando las relaciones predictor–respuesta son monótonas.
+- El **árbol de decisión** captura interacciones y no linealidades pero tiende a sobreajustar cuando no se poda.
+- **Random Forest** promedia muchos árboles y reduce la varianza, por eso suele dominar en datos tabulares con variables mixtas.
+- **Naive Bayes** es extremadamente rápido pero su supuesto de independencia limita la exactitud en este dataset.
+- **KNN** depende críticamente de la escala de las variables y del valor de k.
+
+## Elección final del modelo de clasificación
+
+Considerando **accuracy, kappa, tiempo de entrenamiento e interpretabilidad** para la empresa SmartStay, el modelo recomendado es el que figura primero en la tabla comparativa. Si Random Forest obtiene la mayor accuracy (escenario esperado), se sugiere utilizarlo en producción, acompañándolo del modelo de regresión logística multinomial como **modelo interpretable de referencia**: este último es el que permite explicar a los clientes y a la gerencia qué variables (capacidad, número de baños, tipo de habitación, ser superhost) empujan el precio hacia la categoría "caro" y con qué magnitud, información que Random Forest no entrega de forma directa.
