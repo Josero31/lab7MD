@@ -740,3 +740,53 @@ Comparado con:
 Random Forest → más pesado
 
 KNN → más lento en predicción
+
+# 9. Optimización del umbral (Índice de Youden)
+
+```{r}
+roc_obj <- roc(
+  response  = y_test,
+  predictor = as.numeric(probs_test5)
+)
+
+# Mejor umbral usando índice de Youden
+best <- coords(roc_obj, "best", ret = c("threshold", "sensitivity", "specificity"))
+
+best
+
+best_thresh <- as.numeric(best["threshold"])
+
+preds_opt <- ifelse(probs_test5 >= best_thresh, 1, 0)
+
+cm_opt <- confusionMatrix(
+  factor(preds_opt),
+  factor(y_test),
+  positive = "1"
+)
+
+print(cm_opt)
+```
+
+## Interpretacion
+
+
+Interpretación
+
+El índice de Youden maximiza:
+
+J=Sensibilidad+Especificidad−1
+
+El umbral de 0.5 no necesariamente es óptimo
+El índice de Youden permite encontrar un punto más balanceado
+La elección final depende de:
+si prefieren minimizar FP o FN
+
+El umbral de decisión de 0.5 no resulta óptimo para este conjunto de datos, ya que presenta una baja sensibilidad (52%), lo que implica que una gran cantidad de Airbnbs caros no son correctamente identificados.
+
+Al utilizar el índice de Youden, se determinó un nuevo umbral óptimo de aproximadamente 0.326, el cual incrementa significativamente la sensibilidad hasta un 72.6%, permitiendo detectar una mayor proporción de propiedades caras.
+
+Aunque este ajuste reduce la especificidad y aumenta el número de falsos positivos, mejora el balance general del modelo, como lo evidencia el incremento en la exactitud balanceada (de 0.71 a 0.75).
+
+Desde una perspectiva de negocio, este cambio es justificable, ya que es más importante minimizar los falsos negativos (no detectar propiedades caras) que los falsos positivos, debido al impacto directo en los ingresos de la empresa.
+
+Por lo tanto, el umbral basado en el índice de Youden ofrece un mejor equilibrio entre sensibilidad y especificidad, y resulta más adecuado para este problema.
