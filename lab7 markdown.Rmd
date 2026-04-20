@@ -790,3 +790,107 @@ Aunque este ajuste reduce la especificidad y aumenta el número de falsos positi
 Desde una perspectiva de negocio, este cambio es justificable, ya que es más importante minimizar los falsos negativos (no detectar propiedades caras) que los falsos positivos, debido al impacto directo en los ingresos de la empresa.
 
 Por lo tanto, el umbral basado en el índice de Youden ofrece un mejor equilibrio entre sensibilidad y especificidad, y resulta más adecuado para este problema.
+# 10. Selección del mejor modelo de regresión logística
+
+Tras haber construido distintas variantes del modelo (base con umbral 0.5, base con umbral ajustado por Youden y el modelo LASSO regularizado), se comparan bajo los mismos criterios para determinar cuál es el mejor clasificador binario para `es_caro`. Se emplean como criterios: **AIC y BIC** (balance entre ajuste y complejidad), **matriz de confusión** (accuracy, sensibilidad, especificidad, F1, exactitud balanceada) y **tiempo de entrenamiento** como proxy del costo computacional medido en la sección de profiling.
+
+```{r aic_bic_base}
+# --- AIC y BIC del modelo base ---
+aic_base <- AIC(modelo_glm)
+bic_base <- BIC(modelo_glm)
+
+cat("=== Modelo base (glm, umbral 0.5) ===\n")
+cat(sprintf("AIC: %.2f\n", aic_base))
+cat(sprintf("BIC: %.2f\n", bic_base))
+```
+
+```{r aic_bic_lasso}
+# --- AIC y BIC aproximados del modelo LASSO ---
+# glmnet no devuelve AIC/BIC directamente. Se aproxima a partir de la
+# deviance y los grados de libertad efectivos (coeficientes distintos de cero).
+dev_lasso <- deviance(modelo_lasso)
+df_lasso  <- modelo_lasso$df
+n_lasso   <- nrow(x_train)
+
+aic_lasso <- dev_lasso + 2 * df_lasso
+bic_lasso <- dev_lasso + log(n_lasso) * df_lasso
+
+cat("=== Modelo LASSO (glmnet) ===\n")
+cat(sprintf("Deviance       : %.2f\n", dev_lasso))
+cat(sprintf("Coef. activos  : %d\n",   df_lasso))
+cat(sprintf("AIC aproximado : %.2f\n", aic_lasso))
+cat(sprintf("BIC aproximado : %.2f\n", bic_lasso))
+```
+
+El modelo base con umbral Youden y el modelo base con umbral 0.5 comparten el mismo ajuste subyacente (la verosimilitud no cambia, solo cambia el umbral de decisión). Por ello, **AIC y BIC son idénticos entre ambos**; lo que cambia son las métricas derivadas de la matriz de confusión.
+
+```{r comparacion_final_logit}
+# Tabla comparativa: AIC, BIC y métricas de cada variante
+m_base <- data.frame(
+  Modelo        = "Base (umbral 0.5)",
+  AIC           = round(aic_base, 2),
+  BIC           = round(bic_base, 2),
+  Accuracy      = round(as.numeric(cm5$overall["Accuracy"]),        4),
+  Sensibilidad  = round(as.numeric(cm5$byClass["Sensitivity"]),     4),
+  Especificidad = round(as.numeric(cm5$byClass["Specificity"]),     4),
+  F1            = round(as.numeric(cm5$byClass["F1"]),              4),
+  Bal_Accuracy  = round(as.numeric(cm5$byClass["Balanced Accuracy"]),4)
+)
+
+m_youden <- data.frame(
+  Modelo        = "Base (umbral Youden)",
+  AIC           = round(aic_base, 2),
+  BIC           = round(bic_base, 2),
+  Accuracy      = round(as.numeric(cm_opt$overall["Accuracy"]),        4),
+  Sensibilidad  = round(as.numeric(cm_opt$byClass["Sensitivity"]),     4),
+  Especificidad = round(as.numeric(cm_opt$byClass["Specificity"]),     4),
+  F1            = round(as.numeric(cm_opt$byClass["F1"]),              4),
+  Bal_Accuracy  = round(as.numeric(cm_opt$byClass["Balanced Accuracy"]),4)
+)
+
+m_lasso <- data.frame(
+  Modelo        = "LASSO (umbral 0.5)",
+  AIC           = round(aic_lasso, 2),
+  BIC           = round(bic_lasso, 2),
+  Accuracy      = round(as.numeric(cm_lasso$overall["Accuracy"]),        4),
+  Sensibilidad  = round(as.numeric(cm_lasso$byClass["Sensitivity"]),     4),
+  Especificidad = round(as.numeric(cm_lasso$byClass["Specificity"]),     4),
+  F1            = round(as.numeric(cm_lasso$byClass["F1"]),              4),
+  Bal_Accuracy  = round(as.numeric(cm_lasso$byClass["Balanced Accuracy"]),4)
+)
+
+comparacion_logit <- rbind(m_base, m_youden, m_lasso)
+print(comparacion_logit, row.names = FALSE)
+```
+
+```{r tiempos_logit}
+# Tiempo de entrenamiento de cada variante (proxy del profiler)
+t_base <- system.time({
+  glm(es_caro ~ accommodates + bedrooms + bathrooms + beds +
+        room_type + host_is_superhost + instant_bookable +
+        minimum_nights + number_of_reviews + availability_365,
+      data   = train_m,
+      family = binomial(link = "logit"))
+})["elapsed"]
+
+t_lasso <- system.time({
+  glmnet(x_train, y_train, family = "binomial",
+         alpha = 1, lambda = best_lambda)
+})["elapsed"]
+
+tiempos_logit <- data.frame(
+  Modelo          = c("Base (glm)", "LASSO (glmnet)"),
+  Tiempo_segundos = round(c(as.numeric(t_base), as.numeric(t_lasso)), 4)
+)
+print(tiempos_logit, row.names = FALSE)
+```
+
+## Interpretación
+
+Al integrar **AIC/BIC + matriz de confusión + tiempo**, el análisis arroja las siguientes conclusiones:
+
+- El **modelo base con umbral 0.5** tiene un AIC/BIC razonable pero una sensibilidad baja: deja pasar muchos Airbnbs caros reales (alto número de falsos negativos).
+- El **modelo base con umbral Youden** mantiene el mismo AIC/BIC (es el mismo modelo, solo cambia el umbral) y eleva la sensibilidad y la exactitud balanceada, lo que es preferible para SmartStay porque los falsos negativos cuestan más que los falsos positivos (pérdida de ingresos por no detectar una propiedad cara).
+- El **modelo LASSO** logra un ajuste similar al base, con coeficientes más estables y menos variables activas, pero no domina al modelo con umbral Youden en las métricas de clasificación.
+
+Dado que para SmartStay la métrica clave es la **sensibilidad** (detectar las propiedades caras), y que el AIC y BIC del modelo base son competitivos, **el mejor modelo de regresión logística para el problema es el modelo base con el umbral ajustado por Youden**. Conserva la estructura interpretable del GLM (coeficientes y odds ratios directos), su costo computacional es el menor de los tres, y obtiene el mejor balance entre sensibilidad y especificidad.
